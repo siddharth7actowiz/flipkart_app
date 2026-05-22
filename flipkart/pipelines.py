@@ -71,6 +71,7 @@ class FlipkartPipeline:
             self.update_url_status("product_links",item["product_id"])
             self.conn.commit()
             return item
+
         if spider.name=="pl":
             item = ItemAdapter(item)
 
@@ -84,23 +85,10 @@ class FlipkartPipeline:
             return item
         return item
 
-    # def fetch_pending_url(self, tab_name: str):
-    #
-    #     if not hasattr(self, "conn") or self.conn is None:
-    #         raise Exception("DB connection not initialized. open_spider not called yet.")
-    #
-    #     dict_cur = self.conn.cursor(dictionary=True, buffered=True)
-    #
-    #     query = f"SELECT * FROM {tab_name} WHERE status='pending'"
-    #     dict_cur.execute(query)
-    #
-    #     rows = dict_cur.fetchall()
-    #     dict_cur.close()
-    #
-    #     return rows
+
 
     def update_url_status(self, tab_name, url, new_status="done")->None:
-        """Updates the status of a specific row by its ID."""
+
         query = f"UPDATE {tab_name} SET status = %s WHERE product_id = %s"
         self.cursor.execute(query, (new_status, url))
         self.conn.commit()

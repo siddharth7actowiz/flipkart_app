@@ -100,8 +100,7 @@ class Flipkart_PDP(scrapy.Spider):
             pid=row.get("product_id")
 
             payload["pageUri"]=product_url
-            yield scrapy.Request(
-                url="https://1.rome.api.flipkart.net/4/page/fetch",
+            yield scrapy.Request(url="https://1.rome.api.flipkart.net/4/page/fetch",
                 method="POST",
                 headers=headers,
                 body=json.dumps(payload),           # ✅ raw string, same as requests' data=payload
@@ -468,77 +467,108 @@ class Flipkart_PDP(scrapy.Spider):
                 rate_data[key]=val
         else:
             rate_data=None
-        # =====================================================================
-        # DESCRIPTION
-        # Slot 31 → rpd_tab_feature_descricption_manufacture_layout_1
-        #   rpd_description_item_3.value.label_1.value.text
-        # =====================================================================
+
         description = ""
-        try:
-            layout31 = (dls(31)
-                        .get("rpd_tab_feature_descricption_manufacture_layout_1", {})
-                        .get("value", {}))
-            description = (layout31
-                           .get("rpd_description_item_3", {})
-                           .get("value", {})
-                           .get("label_1", {})
-                           .get("value", {})
-                           .get("text", "")).strip()
-        except Exception as e:
-            self.logger.warning(f"description: {e}")
-
-        # =====================================================================
-        # FEATURES
-        # Slot 31 → rpd_feature_layout_2.value.carouselData_0.value[]
-        #   each item: label_0.value.text         → feature title
-        #              customEllipsisData_0.value.prependingText → feature body
-        # =====================================================================
         features = []
-        try:
-            feat_carousel = (dls(31)
-                             .get("rpd_tab_feature_descricption_manufacture_layout_1", {})
-                             .get("value", {})
-                             .get("rpd_feature_layout_2", {})
-                             .get("value", {})
-                             .get("carouselData_0", {})
-                             .get("value", []))
-            for fi in feat_carousel:
-                iv = fi.get("value", {})
-                title = iv.get("label_0", {}).get("value", {}).get("text", "").strip()
-                body = iv.get("customEllipsisData_0", {}).get("value", {}).get("prependingText", "").strip()
-                if title or body:
-                    features.append({"title": title, "description": body})
-        except Exception as e:
-            self.logger.warning(f"features: {e}")
-
-        # =====================================================================
-        # MANUFACTURER INFO
-        # Slot 31 → rpd_manufacture_layout_4.value
-        #   each default_fk_pp_rpd_header_body_* key:
-        #     label_0.value.text → field name
-        #     label_1.value.text → field value (can be str or list)
-        # =====================================================================
         manufacturer_info = {}
-        try:
-            mfg_map = (dls(31)
-                       .get("rpd_tab_feature_descricption_manufacture_layout_1", {})
-                       .get("value", {})
-                       .get("rpd_manufacture_layout_4", {})
-                       .get("value", {}))
-            for k, v in mfg_map.items():
-                if not k.startswith("default_fk_pp_rpd_header_body"):
-                    continue
-                val = v.get("value", {})
-                field_name = val.get("label_0", {}).get("value", {}).get("text", "")
-                field_value = val.get("label_1", {}).get("value", {}).get("text", "")
-                if isinstance(field_value, list):
-                    field_value = ", ".join(str(x) for x in field_value).strip()
-                else:
-                    field_value = str(field_value).strip()
-                if field_name and field_value:
-                    manufacturer_info[field_name] = field_value
-        except Exception as e:
-            self.logger.warning(f"manufacturer_info: {e}")
+
+        # ── Try slot 31 (Layout A) ───────────────────────────────────────────
+        layout31 = (dls(31)
+                    .get("rpd_tab_feature_descricption_manufacture_layout_1", {})
+                    .get("value", {}))
+
+        if layout31:
+            # Description – label_1
+            try:
+                desc_raw = (layout31
+                            .get("rpd_description_item_3", {})
+                            .get("value", {})
+                            .get("label_1", {})
+                            .get("value", {})
+                            .get("text", ""))
+                description = str(desc_raw).strip()
+            except Exception as e:
+                self.logger.warning(f"description (slot31): {e}")
+
+            # Features – carousel; modal DLS has label_0=title, label_1=body
+            try:
+                feat_carousel = (layout31
+                                 .get("rpd_feature_layout_2", {})
+                                 .get("value", {})
+                                 .get("carouselData_0", {})
+                                 .get("value", []))
+                for fi in feat_carousel:
+                    try:
+                        modal_dls = (fi["value"]["row_0"]["action"]["params"]
+                        ["widgetData"]["data"]["dlsData"])
+                        title = modal_dls.get("label_0", {}).get("value", {}).get("text", "").strip()
+                        body = modal_dls.get("label_1", {}).get("value", {}).get("text", "").strip()
+                        if title or body:
+                            features.append({"title": title, "description": body})
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.logger.warning(f"features (slot31): {e}")
+
+            # Manufacturer – same key in both layouts
+            try:
+                mfg_map = layout31.get("rpd_manufacture_layout_4", {}).get("value", {})
+                for k, v in mfg_map.items():
+                    if not k.startswith("default_fk_pp_rpd_header_body"):
+                        continue
+                    val = v.get("value", {})
+                    field_name = val.get("label_0", {}).get("value", {}).get("text", "")
+                    field_value = val.get("label_1", {}).get("value", {}).get("text", "")
+                    if isinstance(field_value, list):
+                        field_value = ", ".join(str(x) for x in field_value).strip()
+                    else:
+                        field_value = str(field_value).strip()
+                    if field_name and field_value:
+                        manufacturer_info[field_name] = field_value
+            except Exception as e:
+                self.logger.warning(f"manufacturer_info (slot31): {e}")
+
+        # ── Fall back to slot 32 (Layout B) if slot 31 produced nothing ─────
+        # (also runs if slot 31 exists but description/mfr came back empty)
+        layout32 = (dls(32)
+                    .get("rpd_tab_showcase_vertical_list_0", {})
+                    .get("value", {}))
+
+        if layout32:
+            # Description – label_0  (key difference from Layout A)
+            if not description:
+                try:
+                    desc_raw = (layout32
+                                .get("rpd_description_item_3", {})
+                                .get("value", {})
+                                .get("label_0", {})
+                                .get("value", {})
+                                .get("text", ""))
+                    description = str(desc_raw).strip()
+                except Exception as e:
+                    self.logger.warning(f"description (slot32): {e}")
+
+            # Features – slot 32 doesn't carry inline feature text;
+            # only a "Show More" navigation button is present, so we skip.
+
+            # Manufacturer – same structure as Layout A
+            if not manufacturer_info:
+                try:
+                    mfg_map = layout32.get("rpd_manufacture_layout_4", {}).get("value", {})
+                    for k, v in mfg_map.items():
+                        if not k.startswith("default_fk_pp_rpd_header_body"):
+                            continue
+                        val = v.get("value", {})
+                        field_name = val.get("label_0", {}).get("value", {}).get("text", "")
+                        field_value = val.get("label_1", {}).get("value", {}).get("text", "")
+                        if isinstance(field_value, list):
+                            field_value = ", ".join(str(x) for x in field_value).strip()
+                        else:
+                            field_value = str(field_value).strip()
+                        if field_name and field_value:
+                            manufacturer_info[field_name] = field_value
+                except Exception as e:
+                    self.logger.warning(f"manufacturer_info (slot32): {e}")
 
         others={
             "brand": brand,
@@ -590,10 +620,6 @@ class Flipkart_PDP(scrapy.Spider):
             "country_code": "IN",
             "others":json.dumps(clean_empty(others))
         }
-        # =====================================================================
-        # YIELD
-        # =====================================================================
-
         yield item
 
     def errback_http(self, failure):
